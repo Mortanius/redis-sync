@@ -48,7 +48,8 @@ func (m *Mutex) getAuxQueueKey() string {
 
 func (m *Mutex) Lock() (rerr error) {
 	auxQueueKey := m.getAuxQueueKey()
-	return m.cl.Watch(m.ctx, func(tx *redis.Tx) error {
+	var hasLock bool
+	if err := m.cl.Watch(m.ctx, func(tx *redis.Tx) error {
 		mLen, err := tx.LLen(m.ctx, m.QueueKey).Uint64()
 		if err != nil {
 			return err
@@ -67,21 +68,32 @@ func (m *Mutex) Lock() (rerr error) {
 				}
 
 				if auxLen == 0 {
+					hasLock = true
 					if err := pipe.LPush(m.ctx, auxQueueKey, time.Now()).Err(); err != nil {
 						return err
 					}
-					return pipe.Expire(m.ctx, auxQueueKey, m.lockTimeout).Err()
+					if m.lockTimeout != 0 {
+						return pipe.Expire(m.ctx, auxQueueKey, m.lockTimeout).Err()
+					}
+					return nil
 				}
 				return nil
 			}); err != nil {
+				hasLock = false
 				if err == RedisTxFailedErr {
 					return nil
 				}
 				return err
 			}
 		}
-		return tx.BRPopLPush(m.ctx, m.QueueKey, auxQueueKey, m.waitTimeout).Err()
-	}, m.QueueKey, auxQueueKey)
+		return nil
+	}, m.QueueKey, auxQueueKey); err != nil {
+		return err
+	}
+	if !hasLock {
+		return m.cl.BRPopLPush(m.ctx, m.QueueKey, auxQueueKey, m.waitTimeout).Err()
+	}
+	return nil
 }
 
 func (m *Mutex) Unlock() error {
