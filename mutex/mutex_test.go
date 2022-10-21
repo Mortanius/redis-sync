@@ -105,27 +105,55 @@ func TestMutex_MockedClient(t *testing.T) {
 		waitTimeout := time.Second * 3
 		mux := NewMutex(context.Background(), cl, "dummy").WithLockTimeout(lockTimeout).WithWaitTimeout(waitTimeout)
 
+		// Successful lock
 		mock.ExpectWatch(MutexPrefix+"dummy", mux.getAuxQueueKey())
 		mock.ExpectLLen(MutexPrefix + "dummy").SetVal(0)
+		mock.ExpectTxPipeline()
 		mock.ExpectLLen(mux.getAuxQueueKey()).SetVal(0)
 		mock.ExpectLPush(mux.getAuxQueueKey(), ".*").SetVal(1)
 		mock.ExpectExpire(mux.getAuxQueueKey(), lockTimeout).SetVal(true)
+		mock.ExpectTxPipelineExec()
 		require.NoError(t, mux.Lock())
 
+		// Failed Tx
 		mock.ExpectWatch(MutexPrefix+"dummy", mux.getAuxQueueKey())
 		mock.ExpectLLen(MutexPrefix + "dummy").SetVal(0)
-		mock.ExpectLLen(mux.getAuxQueueKey()).SetVal(1)
+		mock.ExpectTxPipeline()
+		mock.ExpectLLen(mux.getAuxQueueKey()).SetVal(0)
+		mock.ExpectLPush(mux.getAuxQueueKey(), ".*").SetVal(1)
+		mock.ExpectExpire(mux.getAuxQueueKey(), lockTimeout).SetVal(true)
+		mock.ExpectTxPipelineExec().SetErr(redis.TxFailedErr)
 		mock.ExpectBRPopLPush(MutexPrefix+"dummy", mux.getAuxQueueKey(), waitTimeout).RedisNil()
 		require.Equal(t, redis.Nil, mux.Lock())
 
+		// TODO: figure a way to return values to commands called from a pipe and run this test case
+		// read aux queue 1
+		//mock.ExpectWatch(MutexPrefix+"dummy", mux.getAuxQueueKey())
+		//mock.ExpectLLen(MutexPrefix + "dummy").SetVal(0)
+		//mock.ExpectTxPipeline()
+		//mock.ExpectLLen(mux.getAuxQueueKey()).SetVal(1)
+		//mock.ExpectTxPipelineExec()
+		//mock.ExpectBRPopLPush(MutexPrefix+"dummy", mux.getAuxQueueKey(), waitTimeout).RedisNil()
+		//require.Equal(t, redis.Nil, mux.Lock())
+
+		// read mux queue is 1
+		mock.ExpectWatch(MutexPrefix+"dummy", mux.getAuxQueueKey())
+		mock.ExpectLLen(MutexPrefix + "dummy").SetVal(1)
+		mock.ExpectBRPopLPush(MutexPrefix+"dummy", mux.getAuxQueueKey(), waitTimeout).RedisNil()
+		require.Equal(t, redis.Nil, mux.Lock())
+
+		// successful unlock
 		mock.ExpectRPopLPush(mux.getAuxQueueKey(), MutexPrefix+"dummy").SetVal("")
 		require.NoError(t, mux.Unlock())
 
+		// another successful lock
 		mock.ExpectWatch(MutexPrefix+"dummy", mux.getAuxQueueKey())
 		mock.ExpectLLen(MutexPrefix + "dummy").SetVal(0)
+		mock.ExpectTxPipeline()
 		mock.ExpectLLen(mux.getAuxQueueKey()).SetVal(0)
 		mock.ExpectLPush(mux.getAuxQueueKey(), ".*").SetVal(1)
 		mock.ExpectExpire(MutexPrefix+"dummy", lockTimeout).SetVal(true)
+		mock.ExpectTxPipelineExec()
 		require.NoError(t, mux.Lock())
 	}
 }
@@ -135,7 +163,7 @@ func TestMutex_RealClient(t *testing.T) {
 		Addr:     os.Getenv("REDIS_HOST") + ":" + os.Getenv("REDIS_PORT"),
 		Password: os.Getenv("REDIS_PW"),
 	})
-	mux := NewMutex(context.Background(), cl, "dummy").WithLockTimeout(time.Second * 5)
+	mux := NewMutex(context.Background(), cl, "dummy")
 
 	var count = 0
 
@@ -145,7 +173,12 @@ func TestMutex_RealClient(t *testing.T) {
 
 	incrFn := func(i int) {
 		defer wg.Done()
-		defer mux.Unlock()
+		defer func() {
+			t.Log(i, "releasing lock")
+			if err := mux.Unlock(); err != nil {
+				t.Log("unlock failed: " + err.Error())
+			}
+		}()
 
 		lockingAt := time.Now()
 		err := mux.Lock()
@@ -154,7 +187,7 @@ func TestMutex_RealClient(t *testing.T) {
 		}
 		t.Log(i, "acquired lock after", time.Since(lockingAt).Microseconds(), "microseconds")
 		if count != 0 {
-			time.Sleep(time.Millisecond * time.Duration(200+rand.Int31n(800)))
+			time.Sleep(time.Millisecond * time.Duration(20+rand.Int31n(480)))
 			return
 		}
 		count++
