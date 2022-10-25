@@ -46,58 +46,88 @@ func (m *Mutex) getAuxQueueKey() string {
 	return m.QueueKey + "-aux"
 }
 
+func (m *Mutex) tryLock(tx *redis.Tx) (hasLock bool, rerr error) {
+	qLen, rerr := tx.LLen(m.ctx, m.QueueKey).Uint64()
+	if rerr != nil {
+		return
+	}
+	if qLen > 1 {
+		rerr = errors.New("mutex queue length should not be greater than 1")
+		return
+	}
+	if qLen != 0 {
+		return
+	}
+
+	auxQLen, rerr := tx.LLen(m.ctx, m.getAuxQueueKey()).Uint64()
+	if rerr != nil {
+		return
+	}
+	if auxQLen > 1 {
+		rerr = errors.New("mutex aux queue length should not be greater than 1")
+		return
+	}
+	if auxQLen != 0 {
+		return
+	}
+
+	hasLock = true
+
+	if _, err := tx.TxPipelined(m.ctx, func(pipe redis.Pipeliner) error {
+		if err := pipe.LPush(m.ctx, m.QueueKey, time.Now()).Err(); err != nil {
+			return err
+		}
+		if m.lockTimeout != 0 {
+			if err := pipe.Expire(m.ctx, m.QueueKey, m.lockTimeout).Err(); err != nil {
+				return err
+			}
+			return pipe.Expire(m.ctx, m.getAuxQueueKey(), m.lockTimeout).Err()
+		}
+		return nil
+	}); err != nil {
+		hasLock = false
+		if err == RedisTxFailedErr {
+			return
+		}
+		rerr = err
+		return
+	}
+	return
+}
+
 func (m *Mutex) Lock() (rerr error) {
 	auxQueueKey := m.getAuxQueueKey()
 	var hasLock bool
-	if err := m.cl.Watch(m.ctx, func(tx *redis.Tx) error {
-		mLen, err := tx.LLen(m.ctx, m.QueueKey).Uint64()
-		if err != nil {
+	for !hasLock && rerr == nil {
+		if err := m.cl.Watch(m.ctx, func(tx *redis.Tx) (err error) {
+			hasLock, err = m.tryLock(tx)
+			return
+		}, m.QueueKey, auxQueueKey); err != nil {
 			return err
 		}
-		if mLen > 1 {
-			return errors.New("mutex queue length should not be greater than 1")
+		if hasLock {
+			return nil
 		}
-		if mLen == 0 {
-			if _, err := tx.TxPipelined(m.ctx, func(pipe redis.Pipeliner) error {
-				auxLen, err := pipe.LLen(m.ctx, auxQueueKey).Uint64()
-				if err != nil {
-					return err
-				}
-				if auxLen > 1 {
-					return errors.New("mutex aux queue length should not be greater than 1")
-				}
-
-				if auxLen == 0 {
-					hasLock = true
-					if err := pipe.LPush(m.ctx, auxQueueKey, time.Now()).Err(); err != nil {
-						return err
-					}
-					if m.lockTimeout != 0 {
-						return pipe.Expire(m.ctx, auxQueueKey, m.lockTimeout).Err()
-					}
-					return nil
-				}
-				return nil
-			}); err != nil {
-				hasLock = false
-				if err == RedisTxFailedErr {
-					return nil
-				}
-				return err
+		rerr = m.cl.Watch(m.ctx, func(tx *redis.Tx) (rerr error) {
+			err := tx.BLPop(m.ctx, m.waitTimeout, auxQueueKey).Err()
+			if err != nil && err != redis.Nil {
+				rerr = err
+				return
 			}
-		}
-		return nil
-	}, m.QueueKey, auxQueueKey); err != nil {
-		return err
+			hasLock, rerr = m.tryLock(tx)
+			return
+		}, m.QueueKey, auxQueueKey)
 	}
-	if !hasLock {
-		return m.cl.BRPopLPush(m.ctx, m.QueueKey, auxQueueKey, m.waitTimeout).Err()
-	}
-	return nil
+	return
 }
 
 func (m *Mutex) Unlock() error {
-	return m.cl.RPopLPush(m.ctx, m.getAuxQueueKey(), m.QueueKey).Err()
+	auxQueueKey := m.getAuxQueueKey()
+	res := m.cl.RPopLPush(m.ctx, m.QueueKey, auxQueueKey)
+	if err := res.Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 type NonBlockingLocker interface {
