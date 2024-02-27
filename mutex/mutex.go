@@ -127,7 +127,7 @@ func (m *Mutex) Unlock() error {
 	if err := res.Err(); err != nil {
 		return err
 	}
-	return nil
+	return m.cl.Expire(m.ctx, auxQueueKey, m.waitTimeout).Err()
 }
 
 type NonBlockingLocker interface {
