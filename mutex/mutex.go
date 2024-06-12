@@ -10,6 +10,7 @@ import (
 )
 
 type Locker interface {
+	TryLock() (bool, error)
 	Lock() error
 	Unlock() error
 }
@@ -92,6 +93,15 @@ func (m *Mutex) tryLock(tx *redis.Tx) (hasLock bool, rerr error) {
 		rerr = err
 		return
 	}
+	return
+}
+
+func (m *Mutex) TryLock() (hasLock bool, rerr error) {
+	auxQueueKey := m.getAuxQueueKey()
+	rerr = m.cl.Watch(m.ctx, func(tx *redis.Tx) (err error) {
+		hasLock, err = m.tryLock(tx)
+		return
+	}, m.QueueKey, auxQueueKey)
 	return
 }
 
