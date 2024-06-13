@@ -135,6 +135,9 @@ func (m *Mutex) Unlock() error {
 	auxQueueKey := m.getAuxQueueKey()
 	res := m.cl.RPopLPush(m.ctx, m.QueueKey, auxQueueKey)
 	if err := res.Err(); err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil
+		}
 		return err
 	}
 	return m.cl.Expire(m.ctx, auxQueueKey, m.waitTimeout).Err()
