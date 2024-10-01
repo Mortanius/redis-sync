@@ -21,7 +21,8 @@ func TestNonBlockingMutex_MockedClient(t *testing.T) {
 		mock = mock.Regexp()
 
 		timeout := time.Second * 5
-		mux := NewNonBlockingMutex(context.Background(), cl, "dummy").WithLockTimeout(timeout)
+		mux := NewNonBlockingMutex(context.Background(), cl, "dummy").
+			WithLockTimeout(timeout).(*NonBlockingMutex)
 
 		mock.ExpectWatch(mux.Key)
 		mock.ExpectGet(mux.Key).RedisNil()
@@ -106,7 +107,8 @@ func TestMutex_MockedClient(t *testing.T) {
 
 		lockTimeout := time.Second * 10
 		waitTimeout := time.Second * 3
-		mux := NewMutex(context.Background(), cl, keySuffix).WithLockTimeout(lockTimeout).WithWaitTimeout(waitTimeout)
+		mux := NewMutex(context.Background(), cl, keySuffix).WithLockTimeout(lockTimeout).
+			WithWaitTimeout(waitTimeout).(*Mutex)
 
 		// Successful lock
 		mock.ExpectWatch(mux.QueueKey, mux.getAuxQueueKey())

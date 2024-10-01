@@ -10,9 +10,12 @@ import (
 )
 
 type Locker interface {
+	GetKey() string
 	TryLock() (bool, error)
 	Lock() error
 	Unlock() error
+	WithLockTimeout(time.Duration) Locker
+	WithWaitTimeout(time.Duration) Locker
 }
 
 var MutexPrefix = "mutex/"
@@ -25,7 +28,7 @@ type Mutex struct {
 	waitTimeout time.Duration
 }
 
-func NewMutex(ctx context.Context, client *redis.Client, keySuffix string) *Mutex {
+func NewMutex(ctx context.Context, client *redis.Client, keySuffix string) Locker {
 	return &Mutex{
 		ctx:      ctx,
 		cl:       client,
@@ -33,12 +36,16 @@ func NewMutex(ctx context.Context, client *redis.Client, keySuffix string) *Mute
 	}
 }
 
-func (m *Mutex) WithLockTimeout(d time.Duration) *Mutex {
+func (m *Mutex) GetKey() string {
+	return m.QueueKey
+}
+
+func (m *Mutex) WithLockTimeout(d time.Duration) Locker {
 	m.lockTimeout = d
 	return m
 }
 
-func (m *Mutex) WithWaitTimeout(d time.Duration) *Mutex {
+func (m *Mutex) WithWaitTimeout(d time.Duration) Locker {
 	m.waitTimeout = d
 	return m
 }
@@ -144,8 +151,10 @@ func (m *Mutex) Unlock() error {
 }
 
 type NonBlockingLocker interface {
+	GetKey() string
 	TryLock() (bool, error)
 	Unlock() error
+	WithLockTimeout(time.Duration) NonBlockingLocker
 }
 
 var NonBlockingMutexPrefix = "non-blocking-mutex/"
@@ -157,7 +166,7 @@ type NonBlockingMutex struct {
 	lockTimeout time.Duration
 }
 
-func NewNonBlockingMutex(ctx context.Context, client *redis.Client, keySuffix string) *NonBlockingMutex {
+func NewNonBlockingMutex(ctx context.Context, client *redis.Client, keySuffix string) NonBlockingLocker {
 	return &NonBlockingMutex{
 		ctx: ctx,
 		cl:  client,
@@ -165,7 +174,11 @@ func NewNonBlockingMutex(ctx context.Context, client *redis.Client, keySuffix st
 	}
 }
 
-func (m *NonBlockingMutex) WithLockTimeout(d time.Duration) *NonBlockingMutex {
+func (m *NonBlockingMutex) GetKey() string {
+	return m.Key
+}
+
+func (m *NonBlockingMutex) WithLockTimeout(d time.Duration) NonBlockingLocker {
 	m.lockTimeout = d
 	return m
 }
